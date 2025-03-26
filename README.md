@@ -1,4 +1,4 @@
-# Catraca-to-Datamace Integration
+# Rust CSV Serializer - Example
 
 ## Description
 This project is designed to integrate data from a ** legacy turnstile access control system ** into the **HR system**. It will collect, process, and transfer access logs using **Rust** for performance, reliability, and safety.
