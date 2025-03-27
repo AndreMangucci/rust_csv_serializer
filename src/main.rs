@@ -5,6 +5,7 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 // use std::result;
+use std::fs;
 
 #[derive(Debug, Deserialize)]
 struct Row<'a> {
@@ -21,68 +22,85 @@ struct Row<'a> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Open the CSV file
-    let file = File::open("data/example.csv")?;
+    let paths = fs::read_dir("./data_in/").unwrap();
 
-    // Create a CSV reader with no headers
-    let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+    for path in paths {
+        // Open the CSV file
 
-    // Create a buffer for each record
-    let mut record = ByteRecord::new();
+        let file_path = &path.unwrap();
+        let file = File::open(&file_path.path())?;
 
-    let mut lines: Vec<String> = vec![];
+        let file_name_osstr = file_path.file_name();
+        let file_name = file_name_osstr.to_str().unwrap();
 
-    // Read each record as raw bytes
-    while rdr.read_byte_record(&mut record)? {
-        // Decode each field from WINDOWS_1252 to UTF-8
-        let utf8_record: Vec<String> = record
-            .iter()
-            .map(|field| {
-                // Decode using WINDOWS_1252
-                let (decoded, _, had_errors) = ENCODING.decode(field);
-                if had_errors {
-                    eprintln!("Warning: Encoding errors detected in field: {:?}", field);
+        println!("Processing file: {:?}", file_name);
+
+        // Create a CSV reader with no headers
+        let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+
+        // Create a buffer for each record
+        let mut record = ByteRecord::new();
+
+        let mut lines: Vec<String> = vec![];
+
+        // Read each record as raw bytes
+        while rdr.read_byte_record(&mut record)? {
+            // Decode each field from WINDOWS_1252 to UTF-8
+            let utf8_record: Vec<String> = record
+                .iter()
+                .map(|field| {
+                    // Decode using WINDOWS_1252
+                    let (decoded, _, had_errors) = ENCODING.decode(field);
+                    if had_errors {
+                        eprintln!("Warning: Encoding errors detected in field: {:?}", field);
+                    }
+                    decoded.into_owned()
+                })
+                .collect();
+
+            // Convert the Vec<String> to a StringRecord
+            let string_record = StringRecord::from(utf8_record);
+
+            // Deserialize the record into a Row struct
+            let row: Row = string_record.deserialize(None)?;
+
+            // Formating Data
+
+            // RE
+            let alignment = 15;
+            // let f_worker_id = format!("{:0fill$}", row.worker_id, fill = alignment);
+            let f_worker_id = match row.worker_id {
+                Some(id) => format!("{:0fill$}", id, fill = alignment),
+                None => {
+                    eprintln!("Skipping row with missing worker_id.");
+                    continue;
                 }
-                decoded.into_owned()
-            })
-            .collect();
+            };
 
-        // Convert the Vec<String> to a StringRecord
-        let string_record = StringRecord::from(utf8_record);
+            // Date
+            let date = row.date;
+            let f_date = format!("{}{}{}", &date[..2], &date[3..5], &date[8..10]);
 
-        // Deserialize the record into a Row struct
-        let row: Row = string_record.deserialize(None)?;
+            // Time
+            let f_time = format!("{}{}{}", &date[11..13], &date[14..16], &date[17..19]);
 
-        // Formating Data
+            // Final row
+            let end_row = String::from("100200");
+            // println!("{f_worker_id}{f_date}{f_time}{end_row}");
 
-        // RE
-        let alignment = 15;
-        // let f_worker_id = format!("{:0fill$}", row.worker_id, fill = alignment);
-        let f_worker_id = match row.worker_id {
-            Some(id) => format!("{:0fill$}", id, fill = alignment),
-            None => {
-                eprintln!("Skipping row with missing worker_id.");
-                continue;
-            }
-        };
+            //  Write File
+            let f_row = format!("{f_worker_id}{f_date}{f_time}{end_row}");
+            lines.push(f_row);
+        }
 
-        // Date
-        let date = row.date;
-        let f_date = format!("{}{}{}", &date[..2], &date[3..5], &date[8..10]);
+        let mut new_file_name: String = "data_out/".to_string();
 
-        // Time
-        let f_time = format!("{}{}{}", &date[11..13], &date[14..16], &date[17..19]);
+        new_file_name.push_str(file_name.to_string().replace(".csv", ".txt").as_str());
 
-        // Final row
-        let end_row = String::from("100200");
-        // println!("{f_worker_id}{f_date}{f_time}{end_row}");
+        println!("Writing to file: {:?}", new_file_name);
 
-        //  Write File
-        let f_row = format!("{f_worker_id}{f_date}{f_time}{end_row}");
-        lines.push(f_row);
+        let _result = write_lines_to_file(new_file_name.as_str(), &lines);
     }
-
-    let _result = write_lines_to_file("output.txt", &lines);
 
     Ok(())
 }
