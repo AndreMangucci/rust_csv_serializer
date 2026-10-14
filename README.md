@@ -24,3 +24,7 @@ This project is designed to integrate data from a ** legacy turnstile access con
    ```sh
    git clone https://github.com/your-username/catraca-datamace-integration.git
    cd catraca-datamace-integration -->
+
+# Build for Windows
+
+cargo build --release --target x86_64-pc-windows-gnu

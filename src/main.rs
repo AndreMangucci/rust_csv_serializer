@@ -21,6 +21,8 @@ struct Row<'a> {
     _local: &'a str,
 }
 
+const EXPECTED_FIELDS: usize = 10;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let paths = fs::read_dir("./data_in/").unwrap();
 
@@ -35,16 +37,29 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         println!("Processing file: {:?}", file_name);
 
-        // Create a CSV reader with no headers
-        let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(true)
+            .flexible(true)
+            .from_reader(file);
 
         // Create a buffer for each record
         let mut record = ByteRecord::new();
 
         let mut lines: Vec<String> = vec![];
+        let mut skipped_worker_id = 0;
 
         // Read each record as raw bytes
         while rdr.read_byte_record(&mut record)? {
+            let record_line = rdr.position().line();
+
+            if record.len() != EXPECTED_FIELDS {
+                eprintln!(
+                    "Skipping malformed row at line {record_line}: expected {EXPECTED_FIELDS} fields, got {}.",
+                    record.len()
+                );
+                continue;
+            }
+
             // Decode each field from WINDOWS_1252 to UTF-8
             let utf8_record: Vec<String> = record
                 .iter()
@@ -72,7 +87,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let f_worker_id = match row.worker_id {
                 Some(id) => format!("{:0fill$}", id, fill = alignment),
                 None => {
-                    eprintln!("Skipping row with missing worker_id.");
+                    skipped_worker_id += 1;
                     continue;
                 }
             };
@@ -93,19 +108,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             lines.push(f_row);
         }
 
+        if skipped_worker_id > 0 {
+            eprintln!("Skipped {skipped_worker_id} rows with missing worker_id.");
+        }
+
         let mut new_file_name: String = "data_out/".to_string();
 
         new_file_name.push_str(file_name.to_string().replace(".csv", ".txt").as_str());
 
         println!("Writing to file: {:?}", new_file_name);
 
-        let _result = write_lines_to_file(new_file_name.as_str(), &lines);
+        write_lines_to_file(new_file_name.as_str(), &lines)?;
     }
 
     Ok(())
 }
 
 fn write_lines_to_file(filename: &str, lines: &[String]) -> io::Result<()> {
+    fs::create_dir_all("data_out")?;
     let file = File::create(filename)?;
     let mut writer = BufWriter::new(file);
 
