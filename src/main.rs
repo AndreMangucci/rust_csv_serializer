@@ -64,7 +64,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let mut record = ByteRecord::new();
         let mut lines: Vec<String> = vec![];
-        let mut skipped_worker_id = 0;
 
         while rdr.read_byte_record(&mut record)? {
             let line = record.position().map(|p| p.line()).unwrap_or(0);
