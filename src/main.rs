@@ -1,126 +1,189 @@
-use csv::{ByteRecord, ReaderBuilder, StringRecord};
+use chrono::{Local, NaiveDateTime};
+use csv::{ByteRecord, ReaderBuilder, StringRecord, Writer};
 use encoding_rs::WINDOWS_1252 as ENCODING;
 use serde::Deserialize;
 use std::error::Error;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
-// use std::result;
-use std::fs;
+
+const EXPECTED_COLS: usize = 10;
 
 #[derive(Debug, Deserialize)]
 struct Row<'a> {
-    _id: u32,
+    _id: &'a str,
     date: &'a str,
     _name: String,
     _1: &'a str,
     _2: &'a str,
     _status: &'a str,
     _3: &'a str,
-    worker_id: Option<i32>,
+    worker_id: &'a str, // parsed manually so we can report the raw value
     _device: &'a str,
     _local: &'a str,
 }
 
-const EXPECTED_FIELDS: usize = 10;
+fn log_error(
+    report: &mut Writer<File>,
+    file: &str,
+    line: u64,
+    kind: &str,
+    obs: &str,
+) -> csv::Result<()> {
+    eprintln!("[{file}:{line}] {kind} - {obs}");
+    report.write_record([file, &line.to_string(), kind, obs])
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let paths = fs::read_dir("./data_in/").unwrap();
+    fs::create_dir_all("./data_out")?;
+
+    // Report file, one per execution
+    let report_name = format!(
+        "data_out/relatorio_{}.csv",
+        Local::now().format("%Y%m%d_%H%M%S")
+    );
+    let mut report = Writer::from_path(&report_name)?;
+    report.write_record(["nome_arquivo", "linha_erro", "tipo_erro", "observacao"])?;
+
+    let paths = fs::read_dir("./data_in/")?;
 
     for path in paths {
-        // Open the CSV file
+        let entry = path?;
+        let file = File::open(entry.path())?;
 
-        let file_path = &path.unwrap();
-        let file = File::open(&file_path.path())?;
-
-        let file_name_osstr = file_path.file_name();
+        let file_name_osstr = entry.file_name();
         let file_name = file_name_osstr.to_str().unwrap();
 
         println!("Processing file: {:?}", file_name);
 
+        // flexible(true): don't abort on rows with a wrong column count,
+        // we check it ourselves and report it.
         let mut rdr = ReaderBuilder::new()
             .has_headers(true)
             .flexible(true)
             .from_reader(file);
 
-        // Create a buffer for each record
         let mut record = ByteRecord::new();
-
         let mut lines: Vec<String> = vec![];
         let mut skipped_worker_id = 0;
 
-        // Read each record as raw bytes
         while rdr.read_byte_record(&mut record)? {
-            let record_line = rdr.position().line();
+            let line = record.position().map(|p| p.line()).unwrap_or(0);
 
-            if record.len() != EXPECTED_FIELDS {
-                eprintln!(
-                    "Skipping malformed row at line {record_line}: expected {EXPECTED_FIELDS} fields, got {}.",
-                    record.len()
-                );
+            // Wrong number of columns
+            if record.len() != EXPECTED_COLS {
+                log_error(
+                    &mut report,
+                    file_name,
+                    line,
+                    "numero de colunas incorreto",
+                    &format!("esperado {}, encontrado {}", EXPECTED_COLS, record.len()),
+                )?;
                 continue;
             }
 
-            // Decode each field from WINDOWS_1252 to UTF-8
+            // Decode WINDOWS_1252 -> UTF-8
+            let mut encoding_problem = false;
             let utf8_record: Vec<String> = record
                 .iter()
                 .map(|field| {
-                    // Decode using WINDOWS_1252
                     let (decoded, _, had_errors) = ENCODING.decode(field);
                     if had_errors {
-                        eprintln!("Warning: Encoding errors detected in field: {:?}", field);
+                        encoding_problem = true;
                     }
                     decoded.into_owned()
                 })
                 .collect();
 
-            // Convert the Vec<String> to a StringRecord
             let string_record = StringRecord::from(utf8_record);
 
-            // Deserialize the record into a Row struct
-            let row: Row = string_record.deserialize(None)?;
+            if encoding_problem {
+                log_error(
+                    &mut report,
+                    file_name,
+                    line,
+                    "erro de encoding",
+                    &format!("{:?}", string_record),
+                )?;
+            }
 
-            // Formating Data
-
-            // RE
-            let alignment = 15;
-            // let f_worker_id = format!("{:0fill$}", row.worker_id, fill = alignment);
-            let f_worker_id = match row.worker_id {
-                Some(id) => format!("{:0fill$}", id, fill = alignment),
-                None => {
-                    skipped_worker_id += 1;
+            let row: Row = match string_record.deserialize(None) {
+                Ok(r) => r,
+                Err(e) => {
+                    log_error(
+                        &mut report,
+                        file_name,
+                        line,
+                        "linha ilegivel",
+                        &e.to_string(),
+                    )?;
                     continue;
                 }
             };
 
-            // Date
-            let date = row.date;
-            let f_date = format!("{}{}{}", &date[..2], &date[3..5], &date[8..10]);
+            let mut had_error = false;
 
-            // Time
-            let f_time = format!("{}{}{}", &date[11..13], &date[14..16], &date[17..19]);
+            // Worker ID
+            let worker_id = row.worker_id.trim();
+            let f_worker_id = if worker_id.is_empty() {
+                log_error(&mut report, file_name, line, "sem ID", &row._name)?;
+                had_error = true;
+                None
+            } else {
+                match worker_id.parse::<i32>() {
+                    Ok(id) => Some(format!("{:015}", id)),
+                    Err(_) => {
+                        log_error(
+                            &mut report,
+                            file_name,
+                            line,
+                            "ID invalido",
+                            &format!("valor: '{}' | nome: {}", worker_id, row._name),
+                        )?;
+                        had_error = true;
+                        None
+                    }
+                }
+            };
 
-            // Final row
-            let end_row = String::from("100200");
-            // println!("{f_worker_id}{f_date}{f_time}{end_row}");
+            // Date (dd/mm/yyyy hh:mm:ss)
+            let parsed_date =
+                match NaiveDateTime::parse_from_str(row.date.trim(), "%d/%m/%Y %H:%M:%S") {
+                    Ok(d) => Some(d),
+                    Err(_) => {
+                        log_error(
+                            &mut report,
+                            file_name,
+                            line,
+                            "data invalida",
+                            &format!("valor nao convertido: '{}'", row.date),
+                        )?;
+                        had_error = true;
+                        None
+                    }
+                };
 
-            //  Write File
-            let f_row = format!("{f_worker_id}{f_date}{f_time}{end_row}");
-            lines.push(f_row);
+            if had_error {
+                continue;
+            }
+
+            let (f_worker_id, dt) = (f_worker_id.unwrap(), parsed_date.unwrap());
+            let f_date = dt.format("%d%m%y");
+            let f_time = dt.format("%H%M%S");
+            let end_row = "100200";
+
+            lines.push(format!("{f_worker_id}{f_date}{f_time}{end_row}"));
         }
 
-        if skipped_worker_id > 0 {
-            eprintln!("Skipped {skipped_worker_id} rows with missing worker_id.");
-        }
-
-        let mut new_file_name: String = "data_out/".to_string();
-
-        new_file_name.push_str(file_name.to_string().replace(".csv", ".txt").as_str());
-
+        let new_file_name = format!("data_out/{}", file_name.replace(".csv", ".txt"));
         println!("Writing to file: {:?}", new_file_name);
 
-        write_lines_to_file(new_file_name.as_str(), &lines)?;
+        if let Err(e) = write_lines_to_file(&new_file_name, &lines) {
+            log_error(&mut report, file_name, 0, "erro de escrita", &e.to_string())?;
+        }
     }
 
+    report.flush()?;
+    println!("Report written to: {}", report_name);
     Ok(())
 }
 
@@ -128,11 +191,9 @@ fn write_lines_to_file(filename: &str, lines: &[String]) -> io::Result<()> {
     fs::create_dir_all("data_out")?;
     let file = File::create(filename)?;
     let mut writer = BufWriter::new(file);
-
     for line in lines {
         writeln!(writer, "{}", line)?;
     }
-
-    writer.flush()?; // Ensure all data is flushed to the file
+    writer.flush()?;
     Ok(())
 }
